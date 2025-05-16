@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Bouncing Ball in a Spinning Tesseract</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <!-- Three.js from CDN (because even hypercubes deserve a solid engine!) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // Global scene variables
+    let scene, camera, renderer;
+    let boundaryGroup;  // This will host our spinning tesseract wireframe
+    let ball, ballVelocity;
+    const ballRadius = 1;
+    const outerCubeHalfSize = 25; // Our collision boundary: a cube from -25 to 25 in each axis
+
+    // Angular velocity for the boundary (radians per frame)
+    const angularVelocity = new THREE.Vector3(0.01, 0.015, 0.02);
+
+    // Initialize the scene, camera, renderer, boundary (tesseract), and ball.
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 0, 100);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+      window.addEventListener('resize', onWindowResize, false);
+
+      // Create a group that will rotate—our “spinning tesseract”
+      boundaryGroup = new THREE.Group();
+      createTesseractWireframe(outerCubeHalfSize);
+      scene.add(boundaryGroup);
+
+      // Create the bouncing ball (a bright little rebel)
+      const ballGeometry = new THREE.SphereGeometry(ballRadius, 16, 16);
+      const ballMaterial = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+      ball = new THREE.Mesh(ballGeometry, ballMaterial);
+      // Place it somewhere inside the boundary so it’s not too shy (or too central)
+      ball.position.set(10, 5, -5);
+      scene.add(ball);
+
+      // Set an initial velocity in world space
+      ballVelocity = new THREE.Vector3(0.2, 0.3, 0.25);
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // Create a decorative tesseract wireframe.
+    // Here we draw two cubes (an outer and an inner cube) with connecting lines—a classic 4D projection look.
+    function createTesseractWireframe(halfSize) {
+      // Outer cube (the collision boundary)
+      const outerGeometry = new THREE.BoxGeometry(2 * halfSize, 2 * halfSize, 2 * halfSize);
+      const outerEdges = new THREE.EdgesGeometry(outerGeometry);
+      const outerLine = new THREE.LineSegments(
+        outerEdges,
+        new THREE.LineBasicMaterial({ color: 0x00ff00, opacity: 0.5, transparent: true })
+      );
+      boundaryGroup.add(outerLine);
+
+      // Inner cube (for that extra 4D flair)
+      const innerHalfSize = halfSize / 2;
+      const innerGeometry = new THREE.BoxGeometry(2 * innerHalfSize, 2 * innerHalfSize, 2 * innerHalfSize);
+      const innerEdges = new THREE.EdgesGeometry(innerGeometry);
+      const innerLine = new THREE.LineSegments(
+        innerEdges,
+        new THREE.LineBasicMaterial({ color: 0x0000ff, opacity: 0.5, transparent: true })
+      );
+      boundaryGroup.add(innerLine);
+
+      // Connecting edges between corresponding vertices of the two cubes.
+      // (These lines remind us that dimensions can be connected in mysterious ways.)
+      const connectingMaterial = new THREE.LineBasicMaterial({ color: 0xff0000, opacity: 0.5, transparent: true });
+      const connectingGeometry = new THREE.BufferGeometry();
+      const positions = [];
+      const signs = [-1, 1];
+      for (let sx of signs) {
+        for (let sy of signs) {
+          for (let sz of signs) {
+            const outerV = new THREE.Vector3(sx * halfSize, sy * halfSize, sz * halfSize);
+            const innerV = new THREE.Vector3(sx * innerHalfSize, sy * innerHalfSize, sz * innerHalfSize);
+            positions.push(outerV.x, outerV.y, outerV.z);
+            positions.push(innerV.x, innerV.y, innerV.z);
+          }
+        }
+      }
+      connectingGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const connectingLines = new THREE.LineSegments(connectingGeometry, connectingMaterial);
+      boundaryGroup.add(connectingLines);
+    }
+
+    // Animation loop: update the scene and render
+    function animate() {
+      requestAnimationFrame(animate);
+      update();
+      renderer.render(scene, camera);
+    }
+
+    // Update simulation:
+    // 1. Spin the tesseract.
+    // 2. Update the ball's position.
+    // 3. Check for collisions inside the rotating cube (transformed to the cube’s local frame).
+    function update() {
+      // --- 1. Rotate the boundary (our spinning hyper-cage) ---
+      boundaryGroup.rotation.x += angularVelocity.x;
+      boundaryGroup.rotation.y += angularVelocity.y;
+      boundaryGroup.rotation.z += angularVelocity.z;
+
+      // --- 2. Move the ball using Euler integration ---
+      ball.position.add(ballVelocity);
+
+      // --- 3. Collision detection & response ---
+      // We treat the outer cube (of halfSize = outerCubeHalfSize) as our collision boundary.
+      // Since the boundary is spinning, we transform the ball's position and velocity into the cube's (nonrotating) local frame.
+      const boundaryMatrix = new THREE.Matrix3().setFromMatrix4(boundaryGroup.matrixWorld);
+      // For an orthonormal (pure rotation) matrix, inverse = transpose.
+      const boundaryMatrixInv = boundaryMatrix.clone().transpose();
+
+      // Ball's local position (relative to the spinning boundary)
+      let ballPosLocal = ball.position.clone().applyMatrix3(boundaryMatrixInv);
+
+      // The moving boundary imparts its own “wind” (linear velocity) at the ball’s location:
+      let v_boundary = angularVelocity.clone().cross(ball.position);
+      // Relative velocity in local space: remove the boundary’s contribution and transform.
+      let ballVelRelative = ballVelocity.clone().sub(v_boundary).applyMatrix3(boundaryMatrixInv);
+
+      // Check each axis of the local coordinate system:
+      let collided = false;
+      ['x', 'y', 'z'].forEach(axis => {
+        if (Math.abs(ballPosLocal[axis]) + ballRadius > outerCubeHalfSize) {
+          // Clamp position so the ball stays within the boundary.
+          ballPosLocal[axis] = Math.sign(ballPosLocal[axis]) * (outerCubeHalfSize - ballRadius);
+          // Reflect the corresponding component of the relative velocity.
+          ballVelRelative[axis] = -ballVelRelative[axis];
+          collided = true;
+        }
+      });
+
+      // If a collision occurred, convert the corrected local position and velocity back to world space.
+      if (collided) {
+        const correctedPosWorld = ballPosLocal.clone().applyMatrix3(boundaryMatrix);
+        // Recompute the boundary's local contribution at the corrected position.
+        const v_boundary_corrected = angularVelocity.clone().cross(correctedPosWorld);
+        const correctedVelWorld = ballVelRelative.clone().applyMatrix3(boundaryMatrix).add(v_boundary_corrected);
+
+        ball.position.copy(correctedPosWorld);
+        ballVelocity.copy(correctedVelWorld);
+      }
+    }
+
+    // Kick things off!
+    init();
+    animate();
+  </script>
+</body>
+</html>
